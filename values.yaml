@@ -1,0 +1,68 @@
+# Запуская каждую ноду по очереди мы избегаем `race conditions` во время первой инициализации кластера
+# https://www.rabbitmq.com/cluster-formation.html#initial-formation-race-condition
+podManagementPolicy: OrderedReady
+
+persistence:
+  # Создаем pvc темплейт в StatefulSet который будет создавать pvc для каждого пода
+  enabled: true
+  # Используем auto-provisioning с помощью дефолтного storage-class в кластере
+  storageClass: null
+
+service:
+  # Для простоты используем NodePort, в продакшене я бы использовал LoadBalancer с healthchecks
+  type: NodePort
+
+# Запрещаем планировщику k8s назначать больше одного rabbitmq пода на ноду, по понятным причинам
+affinity: |
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app: {{ template "rabbitmq.name" . }}
+            release: {{ .Release.Name | quote }}
+        topologyKey: kubernetes.io/hostname
+
+# https://www.rabbitmq.com/clustering.html#node-count
+replicas: 3
+
+extraSecrets:
+  load-definition:
+    load_definition.json: |
+      {
+        "policies":[
+          {
+            "vhost": "/",
+            "name": "ha-two",
+            "pattern": "",
+            "apply-to": "all",
+            "definition": {
+              "ha-mode": "exactly",
+              "ha-params": 2,
+              "ha-promote-on-failure": "always",
+              "ha-promote-on-shutdown": "always",
+              "ha-sync-mode": "manual"
+            }
+          }
+        ]
+      }
+
+
+rabbitmq:
+  plugins: "rabbitmq_management rabbitmq_peer_discovery_k8s"
+
+  configuration: |-
+    cluster_formation.peer_discovery_backend  = rabbit_peer_discovery_k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    cluster_formation.node_cleanup.interval = 10
+    cluster_formation.node_cleanup.only_log_warning = true
+
+
+    cluster_partition_handling = autoheal
+    queue_master_locator=min-masters
+
+  loadDefinition:
+    enabled: true
+    secretName: load-definition
+
+  extraConfiguration: |-
+    management.load_definitions = /app/load_definition.json
